@@ -6,7 +6,8 @@ import os
 import argparse
 import glob
 from pathlib import Path
-from defacer import Defacer 
+from defacer import Defacer
+import pandas as pd 
 
 def main(input_dir, output_dir):
     input_path = Path(input_dir)
@@ -16,6 +17,16 @@ def main(input_dir, output_dir):
     output_path.mkdir(parents=True, exist_ok=True)
     # verif_path = output_path / "verification"
     # verif_path.mkdir(exist_ok=True)
+
+    # ========== [QC] CSV 로드 ==========
+    qc_csv_path = output_path.parent / "qc_report.csv"
+    if qc_csv_path.exists():
+        qc_df = pd.read_csv(qc_csv_path)
+    else:
+        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done"])
+    
+    patient_stats = {}  # {patient_id: {"target": 0, "done": 0}}
+    # ===================================
 
     print(f"🚀 Defacing Start")
     print(f"   Input: {input_path}")
@@ -45,6 +56,12 @@ def main(input_dir, output_dir):
         patient_out_dir = output_path / patient_id
         patient_out_dir.mkdir(exist_ok=True)
 
+        # ========== [QC] 카운터 초기화 ==========
+        if patient_id not in patient_stats:
+            patient_stats[patient_id] = {"target": 0, "done": 0}
+        patient_stats[patient_id]["target"] += 1
+        # =======================================
+
         try:
             # Defacing 실행
             # where=(1,1,1,1) -> 눈, 코, 귀, 입 모두 지움
@@ -59,11 +76,32 @@ def main(input_dir, output_dir):
             if result['success']:
                 print(f"   ✅ Saved: {result['path']}")
                 success_count += 1
+                patient_stats[patient_id]["done"] += 1  # [QC]
             else:
                 print(f"   ❌ Failed: {result['msg']}")
                 
         except Exception as e:
             print(f"   ❌ Critical Error: {e}")
+
+    # ========== [QC] CSV 업데이트 ==========
+    for patient_id, stats in patient_stats.items():
+        if patient_id in qc_df["case_id"].values:
+            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_target"] = stats["target"]
+            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_done"] = stats["done"]
+        else:
+            new_row = pd.DataFrame([{
+                "case_id": patient_id,
+                "nifti_conversion": "",
+                "defacing_target": stats["target"],
+                "defacing_done": stats["done"]
+            }])
+            qc_df = pd.concat([qc_df, new_row], ignore_index=True)
+        
+        print(f"   📊 [QC] {patient_id}: {stats['done']}/{stats['target']} defaced")
+    
+    qc_df.to_csv(qc_csv_path, index=False)
+    print(f"📋 QC Report 저장: {qc_csv_path}")
+    # ======================================
 
     print(f"\n🎉 완료! {len(nifti_files)}개 중 {success_count}개 성공")
 

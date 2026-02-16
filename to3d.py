@@ -12,6 +12,7 @@ import dicom2nifti.convert_dicom as convert_dicom
 import numpy as np
 import logging
 from pathlib import Path
+import pandas as pd
 
 # 불필요한 경고 메시지 숨김
 logging.getLogger('dicom2nifti').setLevel(logging.CRITICAL)
@@ -152,6 +153,14 @@ def process_to_nifti(input_root, output_root):
     input_path = Path(input_root)
     output_path = Path(output_root)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # ========== [QC] CSV 초기화 ==========
+    qc_csv_path = output_path.parent / "qc_report.csv"
+    if qc_csv_path.exists():
+        qc_df = pd.read_csv(qc_csv_path)
+    else:
+        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done"])
+    # =====================================
     
     # 임시 작업 공간 (정리된 DICOM용)
     temp_workspace = output_path / "_temp_organized"
@@ -168,6 +177,11 @@ def process_to_nifti(input_root, output_root):
     for patient_dir in patient_folders:
         patient_id = patient_dir.name
         print(f"\n🔹 Processing Patient: {patient_id}")
+
+        # ========== [QC] 카운터 초기화 ==========
+        series_total = 0
+        convert_success = 0
+        # =======================================
         
         # [Step 1] 복잡한 폴더 구조(301, 501...)를 깔끔하게(T1, FLAIR...) 정리
         organized_patient_dir = organize_dicom_folder(patient_dir, temp_workspace)
@@ -183,8 +197,11 @@ def process_to_nifti(input_root, output_root):
             # 이미 변환된 파일 있으면 스킵
             if final_path.exists():
                 print(f"   - Skip: {save_name} (이미 존재함)")
+                series_total += 1      # [QC]
+                convert_success += 1   # [QC]
                 continue
-            
+            series_total += 1  # [QC]
+
             # 환자별 결과 폴더 생성
             final_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -211,6 +228,7 @@ def process_to_nifti(input_root, output_root):
                 
                 if found:
                     print("✅ Success")
+                    convert_success += 1  # [QC]
                 else:
                     raise Exception("변환된 파일을 찾을 수 없음")
 
@@ -220,8 +238,27 @@ def process_to_nifti(input_root, output_root):
                 if rescued_file:
                     os.rename(rescued_file, final_path)
                     print("✅ Success (Rescued)")
+                    convert_success += 1  # [QC]
                 else:
                     print("❌ Failed")
+
+        # ========== [QC] CSV 업데이트 (환자 하나 완료 시마다) ==========
+        nifti_conversion = f"{convert_success}/{series_total}"
+        
+        if patient_id in qc_df["case_id"].values:
+            qc_df.loc[qc_df["case_id"] == patient_id, "nifti_conversion"] = nifti_conversion
+        else:
+            new_row = pd.DataFrame([{
+                "case_id": patient_id,
+                "nifti_conversion": nifti_conversion,
+                "defacing_target": "",
+                "defacing_done": ""
+            }])
+            qc_df = pd.concat([qc_df, new_row], ignore_index=True)
+        
+        qc_df.to_csv(qc_csv_path, index=False)
+        print(f"   📊 [QC] {patient_id}: {nifti_conversion} → CSV 업데이트")
+        # =============================================================
 
     # [Cleanup] 임시 폴더 삭제
     try:
