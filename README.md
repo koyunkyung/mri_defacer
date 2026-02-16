@@ -32,7 +32,12 @@ cd mri_reface
 ```
 
 > **Git이 설치되어 있지 않다면?**  
-> GitHub 페이지에서 **Code → Download ZIP** 클릭 후 압축 해제
+> 1. [Git 다운로드 페이지](https://git-scm.com/downloads)에서 운영체제에 맞는 버전 설치
+> 2. 설치 시 기본 옵션 유지하고 **Next** 클릭하여 완료
+> 3. 터미널/명령 프롬프트 재시작 후 `git --version`으로 설치 확인
+>
+> **또는** GitHub 페이지에서 **Code → Download ZIP** 클릭 후 압축 해제
+
 
 <details>
 <summary><b>Mac/Linux 사용자</b></summary>
