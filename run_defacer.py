@@ -88,6 +88,16 @@ def main(input_dir, output_dir):
         patient_stats[patient_id]["target"] += 1
         # =======================================
 
+        # ========== 이미 처리된 파일 스킵 ==========
+        output_filename = f"defaced_{nii_file.name}"
+        output_filepath = patient_out_dir / output_filename
+        if output_filepath.exists():
+            print(f"   ⏭️ Skip: 이미 존재함")
+            patient_stats[patient_id]["done"] += 1  # 이미 완료된 것도 done으로 카운트
+            success_count += 1
+            continue
+        # =========================================
+
         try:
             # Defacing 실행
             # where=(1,1,1,1) -> 눈, 코, 귀, 입 모두 지움
