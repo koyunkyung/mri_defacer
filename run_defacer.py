@@ -22,6 +22,10 @@ def main(input_dir, output_dir):
     qc_csv_path = output_path.parent / "qc_report.csv"
     if qc_csv_path.exists():
         qc_df = pd.read_csv(qc_csv_path)
+        # 기존 float 값을 정수로 변환
+        for col in ["defacing_target", "defacing_done"]:
+            if col in qc_df.columns:
+                qc_df[col] = qc_df[col].fillna(0).astype(int)
     else:
         qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done"])
     
