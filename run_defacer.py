@@ -46,6 +46,7 @@ def main(input_dir, output_dir):
     print(f"   -> Found {len(nifti_files)} files.")
 
     success_count = 0
+    current_patient = None  # [QC] 현재 처리 중인 환자 추적  ← 추가
     
     for nii_file in nifti_files:
         print(f"\n🔹 Processing: {nii_file.name}")
@@ -55,6 +56,27 @@ def main(input_dir, output_dir):
         patient_id = nii_file.parent.name
         patient_out_dir = output_path / patient_id
         patient_out_dir.mkdir(exist_ok=True)
+
+         # ========== [QC] 환자가 바뀌면 이전 환자 결과 저장 ==========  ← 추가
+        if current_patient is not None and current_patient != patient_id:
+            stats = patient_stats[current_patient]
+            if current_patient in qc_df["case_id"].values:
+                qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
+                qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
+            else:
+                new_row = pd.DataFrame([{
+                    "case_id": current_patient,
+                    "nifti_conversion": "",
+                    "defacing_target": int(stats["target"]),
+                    "defacing_done": int(stats["done"])
+                }])
+                qc_df = pd.concat([qc_df, new_row], ignore_index=True)
+            
+            qc_df.to_csv(qc_csv_path, index=False)
+            print(f"   📊 [QC] {current_patient}: {stats['done']}/{stats['target']} defaced → CSV 업데이트")
+        
+        current_patient = patient_id
+        # ===========================================================  ← 추가 끝
 
         # ========== [QC] 카운터 초기화 ==========
         if patient_id not in patient_stats:
@@ -83,25 +105,26 @@ def main(input_dir, output_dir):
         except Exception as e:
             print(f"   ❌ Critical Error: {e}")
 
-    # ========== [QC] CSV 업데이트 ==========
-    for patient_id, stats in patient_stats.items():
-        if patient_id in qc_df["case_id"].values:
-            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_target"] = stats["target"]
-            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_done"] = stats["done"]
+    # ========== [QC] 마지막 환자 결과 저장 ==========
+    if current_patient is not None:
+        stats = patient_stats[current_patient]
+        if current_patient in qc_df["case_id"].values:
+            qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
+            qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
         else:
             new_row = pd.DataFrame([{
-                "case_id": patient_id,
+                "case_id": current_patient,
                 "nifti_conversion": "",
-                "defacing_target": stats["target"],
-                "defacing_done": stats["done"]
+                "defacing_target": int(stats["target"]),
+                "defacing_done": int(stats["done"])
             }])
             qc_df = pd.concat([qc_df, new_row], ignore_index=True)
         
-        print(f"   📊 [QC] {patient_id}: {stats['done']}/{stats['target']} defaced")
-    
-    qc_df.to_csv(qc_csv_path, index=False)
-    print(f"📋 QC Report 저장: {qc_csv_path}")
-    # ======================================
+        qc_df.to_csv(qc_csv_path, index=False)
+        print(f"   📊 [QC] {current_patient}: {stats['done']}/{stats['target']} defaced → CSV 업데이트")
+    # ===============================================
+
+    print(f"\n📋 QC Report 저장: {qc_csv_path}")
 
     print(f"\n🎉 완료! {len(nifti_files)}개 중 {success_count}개 성공")
 
