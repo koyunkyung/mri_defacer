@@ -304,12 +304,14 @@ mri_reface/
 | `nifti_conversion` | DICOM→NIfTI 변환 결과 (성공/전체) | `12/12` |
 | `defacing_target` | Defacing 대상 파일 수 | `12` |
 | `defacing_done` | Defacing 완료 파일 수 | `12` |
+| `error_files` | Defacing 실패한 시퀀스명 | `3D_TOF; SWI_phase` |
 
 **예시:**
 ```csv
-case_id,nifti_conversion,defacing_target,defacing_done
-SA00013_MRI_20230827,12/12,12,12
-SA00031_MRI_20230629,9/10,9,8
+case_id,nifti_conversion,defacing_target,defacing_done,error_files
+SA00013_MRI_20230827,12/12,12,12,
+SA00031_MRI_20230629,9/10,9,8,AX_T2_FLAIR
+SA00032_MRI_20230728,21/21,21,17,3D_TOF; SWI_phase; DWI_b1000; ADC_map
 ```
 
 
