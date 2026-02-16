@@ -27,7 +27,7 @@ def main(input_dir, output_dir):
             if col in qc_df.columns:
                 qc_df[col] = qc_df[col].fillna(0).astype(int)
     else:
-        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done"])
+        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done", "error_files"])
     
     patient_stats = {}  # {patient_id: {"target": 0, "done": 0}}
     # ===================================
@@ -64,15 +64,18 @@ def main(input_dir, output_dir):
          # ========== [QC] 환자가 바뀌면 이전 환자 결과 저장 ==========  ← 추가
         if current_patient is not None and current_patient != patient_id:
             stats = patient_stats[current_patient]
+            error_str = "; ".join(stats["errors"]) if stats["errors"] else ""
             if current_patient in qc_df["case_id"].values:
                 qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
                 qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
+                qc_df.loc[qc_df["case_id"] == current_patient, "error_files"] = error_str
             else:
                 new_row = pd.DataFrame([{
                     "case_id": current_patient,
                     "nifti_conversion": "",
                     "defacing_target": int(stats["target"]),
-                    "defacing_done": int(stats["done"])
+                    "defacing_done": int(stats["done"]),
+                    "error_files": error_str
                 }])
                 qc_df = pd.concat([qc_df, new_row], ignore_index=True)
             
@@ -84,19 +87,9 @@ def main(input_dir, output_dir):
 
         # ========== [QC] 카운터 초기화 ==========
         if patient_id not in patient_stats:
-            patient_stats[patient_id] = {"target": 0, "done": 0}
+            patient_stats[patient_id] = {"target": 0, "done": 0, "errors": []}
         patient_stats[patient_id]["target"] += 1
         # =======================================
-
-        # ========== 이미 처리된 파일 스킵 ==========
-        output_filename = f"defaced_{nii_file.name}"
-        output_filepath = patient_out_dir / output_filename
-        if output_filepath.exists():
-            print(f"   ⏭️ Skip: 이미 존재함")
-            patient_stats[patient_id]["done"] += 1  # 이미 완료된 것도 done으로 카운트
-            success_count += 1
-            continue
-        # =========================================
 
         try:
             # Defacing 실행
@@ -115,22 +108,30 @@ def main(input_dir, output_dir):
                 patient_stats[patient_id]["done"] += 1  # [QC]
             else:
                 print(f"   ❌ Failed: {result['msg']}")
+                # 파일명에서 시퀀스명만 추출 (예: "SA00032_MRI_20230728_3D_TOF_Carotid.nii.gz" → "3D_TOF_Carotid")
+                error_name = nii_file.stem.replace(".nii", "").replace(f"{patient_id}_", "")
+                patient_stats[patient_id]["errors"].append(error_name)
                 
         except Exception as e:
             print(f"   ❌ Critical Error: {e}")
+            error_name = nii_file.stem.replace(".nii", "").replace(f"{patient_id}_", "")
+            patient_stats[patient_id]["errors"].append(error_name)
 
     # ========== [QC] 마지막 환자 결과 저장 ==========
     if current_patient is not None:
         stats = patient_stats[current_patient]
+        error_str = "; ".join(stats["errors"]) if stats["errors"] else ""
         if current_patient in qc_df["case_id"].values:
             qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
             qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
+            qc_df.loc[qc_df["case_id"] == current_patient, "error_files"] = error_str
         else:
             new_row = pd.DataFrame([{
                 "case_id": current_patient,
                 "nifti_conversion": "",
                 "defacing_target": int(stats["target"]),
-                "defacing_done": int(stats["done"])
+                "defacing_done": int(stats["done"]),
+                "error_files": error_str
             }])
             qc_df = pd.concat([qc_df, new_row], ignore_index=True)
         

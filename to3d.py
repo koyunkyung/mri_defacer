@@ -159,7 +159,7 @@ def process_to_nifti(input_root, output_root):
     if qc_csv_path.exists():
         qc_df = pd.read_csv(qc_csv_path)
     else:
-        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done"])
+        qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done", "error_files"])
     # =====================================
     
     # 임시 작업 공간 (정리된 DICOM용)
@@ -226,6 +226,11 @@ def process_to_nifti(input_root, output_root):
                         found = True
                         break
                 
+                # 남은 랜덤 생성 파일들 삭제 (중복 방지)
+                for gf in final_path.parent.glob("*.nii.gz"):
+                    if patient_id not in gf.name:
+                        gf.unlink()  # 삭제
+                
                 if found:
                     print("✅ Success")
                     convert_success += 1  # [QC]
@@ -252,7 +257,8 @@ def process_to_nifti(input_root, output_root):
                 "case_id": patient_id,
                 "nifti_conversion": nifti_conversion,
                 "defacing_target": "",
-                "defacing_done": ""
+                "defacing_done": "",
+                "error_files": ""
             }])
             qc_df = pd.concat([qc_df, new_row], ignore_index=True)
         
