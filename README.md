@@ -60,7 +60,6 @@ mri_reface/
 └── model/             # 학습된 모델 파일
 ```
 
----
 
 ### 2단계: Conda 설치
 
@@ -120,7 +119,6 @@ conda --version
 
 </details>
 
----
 
 ### 3단계: 환경 설정
 
@@ -229,7 +227,7 @@ python to3d.py --input ./raw_data --output ./processed/3d_input
 #### 예상 실행 시간
 - 환자 1명당 약 1-3분 소요 (파일 수에 따라 다름)
 
----
+
 
 ### Step 2: Defacing 실행 (`run_defacer.py`)
 
@@ -295,7 +293,6 @@ mri_reface/
 └── model/                             # 학습된 모델 파일
 ```
 
----
 
 ### QC 리포트 (`qc_report.csv`)
 
@@ -315,7 +312,6 @@ SA00013_MRI_20230827,12/12,12,12
 SA00031_MRI_20230629,9/10,9,8
 ```
 
----
 
 ### NIfTI 파일 확인 방법
 
