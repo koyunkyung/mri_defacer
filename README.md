@@ -270,38 +270,54 @@ python run_defacer.py --input ./processed/3d_input --output ./processed/defaced_
 ## 👌🏻 결과물 및 폴더 구조
 
 프로그램이 성공적으로 실행되면 다음과 같은 구조로 결과물이 생성됩니다:
-
 ```
 mri_reface/
 ├── raw_data/                          # 원본 DICOM 파일 (직접 넣어야 함)
-│   ├── Patient_001/
+│   ├── Patient_001_MRI_20230827/
 │   │   ├── 301/
 │   │   ├── 501/
 │   │   └── ...
-│   └── Patient_002/
+│   └── Patient_002_MRI_20230901/
 │
 ├── processed/                         # 자동 생성되는 결과 폴더
+│   ├── qc_report.csv                  # QC 리포트
 │   ├── 3d_input/                      # Step 1 결과: NIfTI 변환 파일
-│   │   ├── Patient_001/
-│   │   │   ├── Patient_001_T1_MPRAGE.nii.gz
-│   │   │   ├── Patient_001_T2_FLAIR.nii.gz
+│   │   ├── Patient_001_MRI_20230827/
+│   │   │   ├── Patient_001_MRI_20230827_T1_MPRAGE.nii.gz
 │   │   │   └── ...
-│   │   └── Patient_002/
-│   │       └── ...
+│   │   └── Patient_002_MRI_20230901/
 │   │
 │   └── defaced_output/                # Step 2 결과: Defacing 완료 파일
-│       ├── Patient_001/
-│       │   ├── defaced_Patient_001_T1_MPRAGE.nii.gz
-│       │   ├── defaced_Patient_001_T2_FLAIR.nii.gz
+│       ├── Patient_001_MRI_20230827/
+│       │   ├── defaced_Patient_001_MRI_20230827_T1_MPRAGE.nii.gz
 │       │   └── ...
-│       └── Patient_002/
-│           └── ...
+│       └── Patient_002_MRI_20230901/
 │
 ├── env.yaml                           # Conda 환경 설정 파일
 ├── to3d.py                            # DICOM → NIfTI 변환 스크립트
 ├── defacer.py                         # Defacing 모델 코드
 ├── run_defacer.py                     # Defacing 실행 스크립트
 └── model/                             # 학습된 모델 파일
+```
+
+---
+
+### QC 리포트 (`qc_report.csv`)
+
+`to3d.py`와 `run_defacer.py` 실행 시, 각 `case_id`(환자_날짜) 처리가 완료될 때마다 자동으로 업데이트됩니다.
+
+| 열 이름 | 설명 | 예시 |
+|--------|------|------|
+| `case_id` | 환자ID_검사날짜 | `SA00013_MRI_20230827` |
+| `nifti_conversion` | DICOM→NIfTI 변환 결과 (성공/전체) | `12/12` |
+| `defacing_target` | Defacing 대상 파일 수 | `12` |
+| `defacing_done` | Defacing 완료 파일 수 | `12` |
+
+**예시:**
+```csv
+case_id,nifti_conversion,defacing_target,defacing_done
+SA00013_MRI_20230827,12/12,12,12
+SA00031_MRI_20230629,9/10,9,8
 ```
 
 
