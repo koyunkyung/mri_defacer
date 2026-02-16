@@ -187,11 +187,11 @@ DICOM 파일들을 3D NIfTI 형식(`.nii.gz`)으로 변환합니다.
 ```
 mri_reface/
 └── raw_data/                    # 이 폴더에 원본 DICOM 넣기
-    ├── Patient_001/
+    ├── Patient_001_MRI_20230827/
     │   ├── 301/
     │   ├── 501/
     │   └── ...
-    └── Patient_002/
+    └── Patient_002_MRI_20230901/
         └── ...
 ```
 
