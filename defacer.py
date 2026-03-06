@@ -14,7 +14,10 @@ from keras.utils import to_categorical
 import model.model_ver_contour as model
 
 # [설정] TF 1.14 그래프 초기화
-graph = tf.get_default_graph()
+try:
+    graph = tf.compat.v1.get_default_graph()
+except AttributeError:
+    graph = None
 
 class Defacer(object):
     def onehot2label(self, onehot_array):
@@ -53,8 +56,49 @@ class Defacer(object):
                 
         return boxes
 
+    def _cast_to_original_dtype(self, data, dtype):
+        if np.issubdtype(dtype, np.integer):
+            info = np.iinfo(dtype)
+            data = np.rint(data)
+            data = np.clip(data, info.min, info.max)
+            return data.astype(dtype)
+        return data.astype(dtype)
+
+    # def box_blur(self, im_array, box, wth=1):
+    #     # 박스 크기를 wth 배 만큼 확장
+    #     if wth != 1:
+    #         for c in range(3):
+    #             mean_ = (box[c]+box[c+3])/2
+    #             half_len = (box[c+3]-box[c]) * wth / 2
+    #             box[c] = int(max(0, mean_ - half_len))
+    #             box[c+3] = int(min(im_array.shape[c], mean_ + half_len))
+
+    #     # [핵심] 해당 영역을 0으로 채움 (확실한 익명화)
+    #     im_array[box[0]:box[3], box[1]:box[4], box[2]:box[5]] = 0
+    #     return im_array
+
     def box_blur(self, im_array, box, wth=1):
-        # 박스 크기를 wth 배 만큼 확장
+        # 🛡️ [핵심 방어막] 뇌 내부 오작동 감지 로직 🛡️
+        z_max, y_max, x_max = im_array.shape
+        
+        # AI가 찾은 '얼굴 추정' 박스의 중심 좌표 계산
+        center_z = (box[0] + box[3]) / 2
+        center_y = (box[1] + box[4]) / 2
+        center_x = (box[2] + box[5]) / 2
+        
+        # 중심 좌표가 전체 이미지의 핵심 뇌 영역(30% ~ 70% 깊이)에 있는지 확인
+        is_deep_inside = (
+            (0.3 * z_max < center_z < 0.7 * z_max) and 
+            (0.3 * y_max < center_y < 0.7 * y_max) and 
+            (0.3 * x_max < center_x < 0.7 * x_max)
+        )
+        
+        # 뇌 정중앙이라면 AI의 헛것(오작동)이므로 지우지 않고 원본 그대로 살려줌
+        if is_deep_inside:
+            print(f"      🛡️ [Shield] 뇌 내부 오류 감지! 머리 빵꾸를 막기 위해 무시합니다. (Center: {int(center_z)}, {int(center_y)}, {int(center_x)})")
+            return im_array
+
+        # --- 아래는 정상적인 얼굴 위치일 때만 실행되는 블러링 로직 ---
         if wth != 1:
             for c in range(3):
                 mean_ = (box[c]+box[c+3])/2
@@ -62,9 +106,10 @@ class Defacer(object):
                 box[c] = int(max(0, mean_ - half_len))
                 box[c+3] = int(min(im_array.shape[c], mean_ + half_len))
 
-        # [핵심] 해당 영역을 0으로 채움 (확실한 익명화)
+        # 해당 영역을 0으로 채움 (확실한 익명화)
         im_array[box[0]:box[3], box[1]:box[4], box[2]:box[5]] = 0
         return im_array
+    
 
     def label_denoising(self, results):
         # 결과 맵 정제 (노이즈 제거)
@@ -97,8 +142,10 @@ class Defacer(object):
             print(f"   🔎 [Processing] Reading: {os.path.basename(nfti_path)}")
             
             # 1. 파일 로드
+            os.makedirs(dest_path, exist_ok=True)
             raw_img = nib.load(nfti_path)
             array_img = raw_img.get_fdata()
+            original_dtype = np.asanyarray(raw_img.dataobj).dtype
             original_shape = array_img.shape
             
             # [중요] 축 변환: (X, Y, Z) -> (Z, Y, X)
@@ -110,7 +157,10 @@ class Defacer(object):
             array_img_input = np.reshape(array_img_re, (1, 128, 128, 128, 1))
 
             # 3. 모델 추론 (Inference)
-            with graph.as_default():
+            if graph is not None:
+                with graph.as_default():
+                    results = model.model.predict(array_img_input)
+            else:
                 results = model.model.predict(array_img_input)
             results = np.round(results)
 
@@ -137,8 +187,11 @@ class Defacer(object):
                 results = results[0, ...]
 
             # 5. 박스 추출 및 블러링 (Transposed 상태에서 진행)
-            boxes = self.bounding_box(results[..., 1:])
             results = self.label_denoising(results)
+            # class index: 0=bg, 1=eyes, 2=nose, 3=ears, 4=mouth
+            # 귀 박스 제거로 인한 뇌 영역 손상 방지를 위해 ears 채널은 비활성화
+            results[..., 3] = 0
+            boxes = self.bounding_box(results[..., 1:])
             
             print(f"      👀 Detected Features: {len(boxes)} boxes found.")
 
@@ -161,7 +214,7 @@ class Defacer(object):
             # 6. 최종 저장 (축 복구)
             # (Z, Y, X) -> (X, Y, Z)
             array_img_final = array_img_transposed.transpose(2, 1, 0)
-            array_img_final = np.round(array_img_final).astype(raw_img.get_data_dtype())
+            array_img_final = self._cast_to_original_dtype(array_img_final, original_dtype)
 
             save_name = prefix.format(os.path.basename(nfti_path))
             save_path = os.path.join(dest_path, save_name)

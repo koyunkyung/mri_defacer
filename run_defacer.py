@@ -2,151 +2,242 @@
 python run_defacer.py --input ./processed/3d_input --output ./processed/defaced_output
 """
 
-import os
 import argparse
-import glob
 from pathlib import Path
+import pandas as pd
+import tempfile
+import numpy as np
+import nibabel as nib
+import nibabel.processing
 from defacer import Defacer
-import pandas as pd 
+
+
+def make_canonical(input_path, temp_path):
+    orig_img = nib.load(str(input_path))
+    cano_img = nib.as_closest_canonical(orig_img)
+    nib.save(cano_img, str(temp_path))
+    return orig_img, cano_img
+
+
+def restore_original_orientation(defaced_path, orig_img, cano_img, final_path):
+    defaced_img = nib.load(str(defaced_path))
+    orig_ornt = nib.io_orientation(orig_img.affine)
+    cano_ornt = nib.io_orientation(cano_img.affine)
+    transform = nib.orientations.ornt_transform(cano_ornt, orig_ornt)
+    restored_data = nib.orientations.apply_orientation(defaced_img.get_fdata(), transform)
+
+    orig_dtype = np.asanyarray(orig_img.dataobj).dtype
+    if np.issubdtype(orig_dtype, np.integer):
+        info = np.iinfo(orig_dtype)
+        restored_data = np.rint(restored_data)
+        restored_data = np.clip(restored_data, info.min, info.max)
+    restored_data = restored_data.astype(orig_dtype)
+
+    restored_img = nib.Nifti1Image(restored_data, orig_img.affine, orig_img.header)
+    nib.save(restored_img, str(final_path))
+
+
+def apply_mask_to_other_sequence(other_file, mask_img, output_path):
+    target_img = nib.load(str(other_file))
+    target_data = target_img.get_fdata()
+
+    # 마스크를 타겟 영상의 좌표/해상도에 맞춰 nearest-neighbor 보간
+    resampled_mask_img = nib.processing.resample_from_to(mask_img, target_img, order=0)
+    resampled_mask_data = resampled_mask_img.get_fdata() > 0.5
+
+    target_data[resampled_mask_data] = 0
+
+    target_dtype = np.asanyarray(target_img.dataobj).dtype
+    if np.issubdtype(target_dtype, np.integer):
+        info = np.iinfo(target_dtype)
+        target_data = np.rint(target_data)
+        target_data = np.clip(target_data, info.min, info.max)
+    target_data = target_data.astype(target_dtype)
+
+    final_img = nib.Nifti1Image(target_data, target_img.affine, target_img.header)
+    nib.save(final_img, str(output_path))
+
+
+def list_nifti_files(directory: Path):
+    files = []
+    for p in directory.rglob("*"):
+        if not p.is_file():
+            continue
+        name = p.name.lower()
+        if name.endswith(".nii") or name.endswith(".nii.gz"):
+            files.append(p)
+    return sorted(files)
+
+
+def discover_patient_groups(input_path: Path):
+    groups = {}
+    direct_files = []
+
+    for child in sorted(input_path.iterdir()):
+        if child.is_dir():
+            nii_files = list_nifti_files(child)
+            if nii_files:
+                groups[child.name] = nii_files
+        elif child.is_file():
+            name = child.name.lower()
+            if name.endswith(".nii") or name.endswith(".nii.gz"):
+                direct_files.append(child)
+
+    # 환자 폴더 없이 파일이 직접 들어있는 경우도 지원
+    if direct_files:
+        groups["_root"] = sorted(direct_files)
+
+    # 하위 구조가 더 깊고, 루트 바로 아래 폴더엔 파일이 없는 경우를 대비한 fallback
+    if not groups:
+        all_files = list_nifti_files(input_path)
+        if all_files:
+            groups["_root"] = all_files
+
+    return groups
+
+
+def choose_reference_t1(nifti_files):
+    candidates = []
+    for f in nifti_files:
+        name_upper = f.name.upper()
+        if "T1" in name_upper and "SAG" in name_upper:
+            candidates.append((0, len(name_upper), f))
+        elif "T1" in name_upper:
+            candidates.append((1, len(name_upper), f))
+        else:
+            candidates.append((2, len(name_upper), f))
+
+    candidates.sort(key=lambda x: (x[0], x[1], x[2].name))
+    return candidates[0][2]
+
+
+def run_dl_deface(defacer, input_file: Path, output_file: Path):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_input = Path(temp_dir) / input_file.name
+        orig_img, cano_img = make_canonical(input_file, temp_input)
+
+        result = defacer.Deidentification_image_nii(
+            where=(1, 1, 1, 1),
+            nfti_path=str(temp_input),
+            dest_path=temp_dir,
+            prefix="defaced",
+        )
+        if not result["success"]:
+            raise RuntimeError(result["msg"])
+
+        defaced_temp_file = Path(result["path"])
+        restore_original_orientation(defaced_temp_file, orig_img, cano_img, output_file)
+
+    return nib.load(str(output_file)), nib.load(str(input_file))
+
+
+def build_mask_from_reference(orig_img, defaced_img):
+    # 숫자 오차에 민감하지 않게 threshold 기반 차이 마스크 생성
+    orig_data = orig_img.get_fdata()
+    defaced_data = defaced_img.get_fdata()
+    mask_data = (np.abs(orig_data - defaced_data) > 1e-6).astype(np.float32)
+    return nib.Nifti1Image(mask_data, orig_img.affine)
+
 
 def main(input_dir, output_dir):
     input_path = Path(input_dir)
     output_path = Path(output_dir)
-    
-    # 결과 폴더 생성
     output_path.mkdir(parents=True, exist_ok=True)
-    # verif_path = output_path / "verification"
-    # verif_path.mkdir(exist_ok=True)
 
-    # ========== [QC] CSV 로드 ==========
     qc_csv_path = output_path.parent / "qc_report.csv"
     if qc_csv_path.exists():
         qc_df = pd.read_csv(qc_csv_path)
-        # 기존 float 값을 정수로 변환
         for col in ["defacing_target", "defacing_done"]:
             if col in qc_df.columns:
                 qc_df[col] = qc_df[col].fillna(0).astype(int)
     else:
         qc_df = pd.DataFrame(columns=["case_id", "nifti_conversion", "defacing_target", "defacing_done", "error_files"])
-    
-    patient_stats = {}  # {patient_id: {"target": 0, "done": 0}}
-    # ===================================
 
-    print(f"🚀 Defacing Start")
-    print(f"   Input: {input_path}")
-    print(f"   Output: {output_path}")
-
-    # Defacer 모델 로딩 (시간이 좀 걸림)
-    print("   ⏳ Loading Model... (Wait)")
+    print("🚀 Defacing Start")
+    print("   ⏳ Loading DL Model...")
     defacer = Defacer()
-    
-    # NIfTI 파일 탐색 (하위 폴더 포함)
-    nifti_files = list(input_path.rglob("*.nii.gz"))
-    
-    if not nifti_files:
-        print("❌ No .nii.gz files found!")
+
+    patient_groups = discover_patient_groups(input_path)
+    if not patient_groups:
+        print("❌ No NIfTI files found in input.")
         return
 
-    print(f"   -> Found {len(nifti_files)} files.")
-
     success_count = 0
-    current_patient = None  # [QC] 현재 처리 중인 환자 추적  ← 추가
-    
-    for nii_file in nifti_files:
-        print(f"\n🔹 Processing: {nii_file.name}")
-        
-        # 환자별 결과 폴더 유지 (선택사항)
-        # 예: output/SA00013/defaced_file.nii.gz
-        patient_id = nii_file.parent.name
-        patient_out_dir = output_path / patient_id
-        patient_out_dir.mkdir(exist_ok=True)
+    total_files = sum(len(v) for v in patient_groups.values())
 
-         # ========== [QC] 환자가 바뀌면 이전 환자 결과 저장 ==========  ← 추가
-        if current_patient is not None and current_patient != patient_id:
-            stats = patient_stats[current_patient]
-            error_str = "; ".join(stats["errors"]) if stats["errors"] else ""
-            if current_patient in qc_df["case_id"].values:
-                qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
-                qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
-                qc_df.loc[qc_df["case_id"] == current_patient, "error_files"] = error_str
-            else:
-                new_row = pd.DataFrame([{
-                    "case_id": current_patient,
-                    "nifti_conversion": "",
-                    "defacing_target": int(stats["target"]),
-                    "defacing_done": int(stats["done"]),
-                    "error_files": error_str
-                }])
-                qc_df = pd.concat([qc_df, new_row], ignore_index=True)
-            
-            qc_df.to_csv(qc_csv_path, index=False)
-            print(f"   📊 [QC] {current_patient}: {stats['done']}/{stats['target']} defaced → CSV 업데이트")
-        
-        current_patient = patient_id
-        # ===========================================================  ← 추가 끝
+    for patient_id, nifti_files in patient_groups.items():
+        out_case_id = patient_id if patient_id != "_root" else "root"
+        patient_out_dir = output_path / out_case_id
+        patient_out_dir.mkdir(parents=True, exist_ok=True)
 
-        # ========== [QC] 카운터 초기화 ==========
-        if patient_id not in patient_stats:
-            patient_stats[patient_id] = {"target": 0, "done": 0, "errors": []}
-        patient_stats[patient_id]["target"] += 1
-        # =======================================
+        print(f"\n🔹 Processing: {patient_id} ({len(nifti_files)} files)")
 
+        reference_t1 = choose_reference_t1(nifti_files)
+        print(f"   🎯 Reference selected: {reference_t1.name}")
+
+        mask_img = None
+        patient_errors = []
+        patient_done = 0
+
+        # 기준 시퀀스 DL 수행
         try:
-            # Defacing 실행
-            # where=(1,1,1,1) -> 눈, 코, 귀, 입 모두 지움
-            result = defacer.Deidentification_image_nii(
-                where=(1, 1, 1, 1),
-                nfti_path=str(nii_file),
-                dest_path=str(patient_out_dir),
-                # verif_path=str(verif_path),
-                prefix="defaced"
-            )
-            
-            if result['success']:
-                print(f"   ✅ Saved: {result['path']}")
-                success_count += 1
-                patient_stats[patient_id]["done"] += 1  # [QC]
-            else:
-                print(f"   ❌ Failed: {result['msg']}")
-                # 파일명에서 시퀀스명만 추출 (예: "SA00032_MRI_20230728_3D_TOF_Carotid.nii.gz" → "3D_TOF_Carotid")
-                error_name = nii_file.stem.replace(".nii", "").replace(f"{patient_id}_", "")
-                patient_stats[patient_id]["errors"].append(error_name)
-                
+            final_t1_path = patient_out_dir / f"defaced_{reference_t1.name}"
+            defaced_t1_img, orig_t1_img = run_dl_deface(defacer, reference_t1, final_t1_path)
+            mask_img = build_mask_from_reference(orig_t1_img, defaced_t1_img)
+            print("   ✅ Reference defaced and mask extracted")
+            success_count += 1
+            patient_done += 1
         except Exception as e:
-            print(f"   ❌ Critical Error: {e}")
-            error_name = nii_file.stem.replace(".nii", "").replace(f"{patient_id}_", "")
-            patient_stats[patient_id]["errors"].append(error_name)
+            print(f"   ❌ Reference DL Error: {e}")
+            patient_errors.append(reference_t1.name)
 
-    # ========== [QC] 마지막 환자 결과 저장 ==========
-    if current_patient is not None:
-        stats = patient_stats[current_patient]
-        error_str = "; ".join(stats["errors"]) if stats["errors"] else ""
-        if current_patient in qc_df["case_id"].values:
-            qc_df.loc[qc_df["case_id"] == current_patient, "defacing_target"] = int(stats["target"])
-            qc_df.loc[qc_df["case_id"] == current_patient, "defacing_done"] = int(stats["done"])
-            qc_df.loc[qc_df["case_id"] == current_patient, "error_files"] = error_str
+        # 마스크 적용 or fallback DL
+        for nii_file in nifti_files:
+            if nii_file == reference_t1:
+                continue
+
+            final_path = patient_out_dir / f"defaced_{nii_file.name}"
+            try:
+                if mask_img is not None:
+                    apply_mask_to_other_sequence(nii_file, mask_img, final_path)
+                    print(f"   ⚡ Mask Applied: {nii_file.name}")
+                else:
+                    # 기준 생성 실패 시, 파일별 DL로 fallback
+                    run_dl_deface(defacer, nii_file, final_path)
+                    print(f"   🧠 Fallback DL: {nii_file.name}")
+
+                success_count += 1
+                patient_done += 1
+            except Exception as e:
+                print(f"   ❌ Defacing Error ({nii_file.name}): {e}")
+                patient_errors.append(nii_file.name)
+
+        error_str = "; ".join(patient_errors)
+        if "case_id" in qc_df.columns and patient_id in qc_df["case_id"].values:
+            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_target"] = len(nifti_files)
+            qc_df.loc[qc_df["case_id"] == patient_id, "defacing_done"] = patient_done
+            qc_df.loc[qc_df["case_id"] == patient_id, "error_files"] = error_str
         else:
-            new_row = pd.DataFrame([{
-                "case_id": current_patient,
-                "nifti_conversion": "",
-                "defacing_target": int(stats["target"]),
-                "defacing_done": int(stats["done"]),
-                "error_files": error_str
-            }])
+            new_row = pd.DataFrame([
+                {
+                    "case_id": patient_id,
+                    "nifti_conversion": "",
+                    "defacing_target": len(nifti_files),
+                    "defacing_done": patient_done,
+                    "error_files": error_str,
+                }
+            ])
             qc_df = pd.concat([qc_df, new_row], ignore_index=True)
-        
+
         qc_df.to_csv(qc_csv_path, index=False)
-        print(f"   📊 [QC] {current_patient}: {stats['done']}/{stats['target']} defaced → CSV 업데이트")
-    # ===============================================
 
-    print(f"\n📋 QC Report 저장: {qc_csv_path}")
+    print(f"\n📋 QC report saved: {qc_csv_path}")
+    print(f"🎉 Completed: {success_count}/{total_files} files")
 
-    print(f"\n🎉 완료! {len(nifti_files)}개 중 {success_count}개 성공")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Path to NIfTI files (e.g., ./processed/3d_input)")
+    parser.add_argument("--input", required=True, help="Path to NIfTI files")
     parser.add_argument("--output", required=True, help="Path to save defaced files")
     args = parser.parse_args()
-    
     main(args.input, args.output)
